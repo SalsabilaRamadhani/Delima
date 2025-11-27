@@ -1,5 +1,5 @@
 <?php
-$koneksi = new mysqli("localhost", "root", "", "salsa_ff");
+$koneksi = new mysqli("localhost", "root", "", "delima");
 if ($koneksi->connect_errno) { die("Gagal konek DB: ".$koneksi->connect_error); }
 
 $kategori = $_GET['kategori'] ?? 'semua';
@@ -19,25 +19,41 @@ function periodEnd($periode, $start) {
     default:         return date('Y-m-t', strtotime($start));
   }
 }
+
 function labelPeriode($periode, $start) {
   if ($periode==='harian')   return date('d M Y', strtotime($start));
   if ($periode==='mingguan') return date('d M Y', strtotime($start)).' – '.date('d M Y', strtotime($start.' +6 days'));
   return date('F Y', strtotime($start));
 }
+
+/* ===================================================
+   PERBAIKAN: buildRanges() sekarang mundur ke belakang
+   =================================================== */
 function buildRanges($periode, $start, $rows=7) {
-  $ranges=[]; $cursor=$start;
-  for($i=0;$i<$rows;$i++){
-    $ranges[]=[
-      'start'=>date('Y-m-d',strtotime($cursor)),
-      'end'  =>date('Y-m-d',strtotime(periodEnd($periode,$cursor))),
-      'label'=>labelPeriode($periode,$cursor),
+  $ranges = [];
+  $cursor = $start;
+
+  for ($i=0; $i < $rows; $i++) {
+    $ranges[] = [
+      'start' => date('Y-m-d', strtotime($cursor)),
+      'end'   => date('Y-m-d', strtotime(periodEnd($periode, $cursor))),
+      'label' => labelPeriode($periode, $cursor),
     ];
-    if ($periode==='harian')       $cursor = date('Y-m-d', strtotime($cursor.' +1 day'));
-    elseif ($periode==='mingguan') $cursor = date('Y-m-d', strtotime($cursor.' +7 days'));
-    else                           $cursor = date('Y-m-01', strtotime($cursor.' +1 month'));
+
+    // Mundur tiap periode
+    if ($periode === 'harian') {
+      $cursor = date('Y-m-d', strtotime($cursor . ' -1 day'));
+    } elseif ($periode === 'mingguan') {
+      $cursor = date('Y-m-d', strtotime($cursor . ' -7 days'));
+    } else {
+      $cursor = date('Y-m-01', strtotime($cursor . ' -1 month'));
+    }
   }
-  return $ranges;
+
+  // Agar tampil urut dari lama → terbaru
+  return array_reverse($ranges);
 }
+
 function qScalar($db,$sql){ $r=$db->query($sql); if(!$r)return 0; $row=$r->fetch_row(); return $row? (float)$row[0]:0; }
 function qRows($db,$sql){ $out=[]; $r=$db->query($sql); if($r){ while($x=$r->fetch_assoc()) $out[]=$x; } return $out; }
 
@@ -46,37 +62,99 @@ $periodRows = [];
 
 if ($kategori==='semua') {
   $ranges = buildRanges($periode, $tanggal, 7);
+
   foreach ($ranges as $r) {
     $start = $koneksi->real_escape_string($r['start']);
     $end   = $koneksi->real_escape_string($r['end']);
-    $produksi = qScalar($koneksi,"SELECT IFNULL(SUM(pr.jumlah_produksi),0) FROM produksi pr LEFT JOIN jadwal j ON j.id_jadwal = pr.id_jadwal WHERE COALESCE(pr.tgl_produksi, j.tanggal) BETWEEN '$start' AND '$end'");
-    $produk_jual = qScalar($koneksi,"SELECT IFNULL(SUM(pr.jumlah_dikemas),0) FROM produksi pr LEFT JOIN jadwal j ON j.id_jadwal = pr.id_jadwal WHERE COALESCE(pr.tgl_produksi, j.tanggal) BETWEEN '$start' AND '$end'");
-    $distribusi    = qScalar($koneksi,"SELECT IFNULL(SUM(jumlah_pesanan),0) FROM distribusi WHERE tanggal_pesanan IS NOT NULL AND tanggal_pesanan BETWEEN '$start' AND '$end'");
-    $stok_snapshot = qScalar($koneksi,"SELECT IFNULL(SUM(jumlah_stok),0) FROM stok WHERE status_stok IN ('Sudah dipacking','Siap dipacking','Siap dikemas') AND jumlah_stok>0");
-    $gaji          = qScalar($koneksi,"SELECT IFNULL(SUM(total_gaji),0) FROM riwayat_gaji WHERE tanggal BETWEEN '$start' AND '$end' AND (keterangan='Dibayar' OR keterangan='dibayar')");
-    $pekerja       = qScalar($koneksi,"SELECT COUNT(*) FROM pekerja_lepas");
-    $pesanan       = $distribusi;
-    $periodRows[] = ['Periode'=>$r['label'],'Produksi'=>$produksi,'Produk Jual'=>$produk_jual,'Distribusi'=>$distribusi,'Stok'=>$stok_snapshot,'Gaji Dibayar'=>$gaji,'Pekerja Aktif'=>(int)$pekerja,'Pesanan'=>$pesanan];
+
+    $produksi = qScalar($koneksi,"SELECT IFNULL(SUM(pr.jumlah_produksi),0)
+      FROM produksi pr LEFT JOIN jadwal j ON j.id_jadwal = pr.id_jadwal 
+      WHERE COALESCE(pr.tgl_produksi, j.tanggal) BETWEEN '$start' AND '$end'");
+
+    $produk_jual = qScalar($koneksi,"SELECT IFNULL(SUM(pr.jumlah_dikemas),0)
+      FROM produksi pr LEFT JOIN jadwal j ON j.id_jadwal = pr.id_jadwal 
+      WHERE COALESCE(pr.tgl_produksi, j.tanggal) BETWEEN '$start' AND '$end'");
+
+    $distribusi = qScalar($koneksi,"SELECT IFNULL(SUM(jumlah_pesanan),0)
+      FROM distribusi WHERE tanggal_pesanan IS NOT NULL AND tanggal_pesanan BETWEEN '$start' AND '$end'");
+
+    $stok_snapshot = qScalar($koneksi,"SELECT IFNULL(SUM(jumlah_stok),0)
+      FROM stok WHERE status_stok IN ('Sudah dipacking','Siap dipacking','Siap dikemas') AND jumlah_stok>0");
+
+    $gaji = qScalar($koneksi,"SELECT IFNULL(SUM(total_gaji),0)
+      FROM riwayat_gaji WHERE tanggal BETWEEN '$start' AND '$end' 
+      AND (keterangan='Dibayar' OR keterangan='dibayar')");
+
+    $pekerja = qScalar($koneksi,"SELECT COUNT(*) FROM pekerja_lepas");
+
+    $pesanan = $distribusi;
+
+    $periodRows[] = [
+      'Periode'=>$r['label'],
+      'Produksi'=>$produksi,
+      'Produk Jual'=>$produk_jual,
+      'Distribusi'=>$distribusi,
+      'Stok'=>$stok_snapshot,
+      'Gaji Dibayar'=>$gaji,
+      'Pekerja Aktif'=>(int)$pekerja,
+      'Pesanan'=>$pesanan
+    ];
   }
+
 } elseif ($kategori==='jadwal') {
   $end = periodEnd($periode, $tanggal);
-  $data = qRows($koneksi, "SELECT tanggal, waktu_mulai, waktu_selesai, jenis_kegiatan FROM jadwal WHERE tanggal BETWEEN '{$tanggal}' AND '{$end}' ORDER BY tanggal ASC, waktu_mulai ASC");
+  $data = qRows($koneksi,
+    "SELECT tanggal, waktu_mulai, waktu_selesai, jenis_kegiatan 
+     FROM jadwal 
+     WHERE tanggal BETWEEN '{$tanggal}' AND '{$end}' 
+     ORDER BY tanggal ASC, waktu_mulai ASC");
+
 } else {
   $end = periodEnd($periode, $tanggal);
+
   switch ($kategori) {
     case 'produksi':
-      $sql="SELECT p.nama_produk,pr.jumlah_produksi,pr.jumlah_dikemas,pr.jumlah_reject,COALESCE(pr.tgl_produksi,j.tanggal) AS tanggal_produksi FROM produksi pr JOIN produk p ON p.id_produk=pr.id_produk LEFT JOIN jadwal j ON j.id_jadwal=pr.id_jadwal WHERE COALESCE(pr.tgl_produksi,j.tanggal) BETWEEN '{$tanggal}' AND '{$end}' ORDER BY tanggal_produksi DESC, pr.id_produksi DESC";break;
+      $sql="SELECT p.nama_produk,pr.jumlah_produksi,pr.jumlah_dikemas,pr.jumlah_reject,
+            COALESCE(pr.tgl_produksi,j.tanggal) AS tanggal_produksi 
+            FROM produksi pr 
+            JOIN produk p ON p.id_produk=pr.id_produk 
+            LEFT JOIN jadwal j ON j.id_jadwal=pr.id_jadwal 
+            WHERE COALESCE(pr.tgl_produksi,j.tanggal) BETWEEN '{$tanggal}' AND '{$end}' 
+            ORDER BY tanggal_produksi DESC, pr.id_produksi DESC";
+      break;
+
     case 'stok':
-      $sql="SELECT s.id_stok,p.nama_produk,s.jumlah_stok,s.status_stok,s.id_produksi FROM stok s JOIN produk p ON p.id_produk=s.id_produk ORDER BY s.id_stok DESC";break;
+      $sql="SELECT s.id_stok,p.nama_produk,s.jumlah_stok,s.status_stok,s.id_produksi
+            FROM stok s 
+            JOIN produk p ON p.id_produk=s.id_produk 
+            ORDER BY s.id_stok DESC";
+      break;
+
     case 'pekerja_lepas':
-      $sql="SELECT pl.nama_pekerja,rg.tanggal,rg.berat_barang_kg,rg.tarif_per_kg,rg.total_gaji,rg.keterangan FROM riwayat_gaji rg JOIN pekerja_lepas pl ON pl.id_pekerja=rg.id_pekerja WHERE rg.tanggal BETWEEN '{$tanggal}' AND '{$end}' ORDER BY rg.tanggal DESC, rg.id_gaji DESC";break;
+      $sql="SELECT pl.nama_pekerja,rg.tanggal,rg.berat_barang_kg,rg.tarif_per_kg,rg.total_gaji,rg.keterangan
+            FROM riwayat_gaji rg 
+            JOIN pekerja_lepas pl ON pl.id_pekerja=rg.id_pekerja 
+            WHERE rg.tanggal BETWEEN '{$tanggal}' AND '{$end}' 
+            ORDER BY rg.tanggal DESC, rg.id_gaji DESC";
+      break;
+
     case 'distribusi':
-      $sql="SELECT d.nama_distributor,d.alamat_distributor,p.nama_produk,d.jumlah_pesanan,d.tanggal_pesanan,d.status_pengiriman FROM distribusi d JOIN produk p ON p.id_produk=d.id_produk WHERE d.tanggal_pesanan IS NOT NULL AND d.tanggal_pesanan BETWEEN '{$tanggal}' AND '{$end}' ORDER BY d.tanggal_pesanan DESC, d.id_distribusi DESC";break;
-    default:$sql="";
+      $sql="SELECT d.nama_distributor,d.alamat_distributor,p.nama_produk,
+            d.jumlah_pesanan,d.tanggal_pesanan,d.status_pengiriman
+            FROM distribusi d 
+            JOIN produk p ON p.id_produk=d.id_produk 
+            WHERE d.tanggal_pesanan IS NOT NULL 
+            AND d.tanggal_pesanan BETWEEN '{$tanggal}' AND '{$end}' 
+            ORDER BY d.tanggal_pesanan DESC, d.id_distribusi DESC";
+      break;
+
+    default: $sql = "";
   }
+
   if ($sql) $data = qRows($koneksi, $sql);
 }
 ?>
+
 <main class="flex-1 bg-gray-100 p-6">
   <section class="bg-white p-6 rounded-md shadow-md">
     <form method="GET" class="flex flex-wrap gap-4 items-end mb-6">
